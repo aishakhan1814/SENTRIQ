@@ -1,0 +1,550 @@
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, ConfigDict
+from app.models.enums import (
+    ScanStatus, AssetType, CryptoPurpose, RiskLevel, EvidenceType,
+    StandardStatus, ThreatScenarioType, ValidationStatus, QuantumSafety, ReviewStatus, TestingRequirement
+)
+
+# Health Schema
+class HealthResponse(BaseModel):
+    status: str = "ok"
+    version: str = "1.2.0"
+    database: str = "connected"
+    versions: Dict[str, str] = Field(default_factory=dict)
+    timestamp: datetime
+
+# Project Schemas
+class ProjectBase(BaseModel):
+    name: str = Field(..., json_schema_extra={"example": "Enterprise Payments Service"})
+    description: Optional[str] = Field(None, json_schema_extra={"example": "Core transaction processing backend"})
+    repository_url: Optional[str] = Field(None, json_schema_extra={"example": "https://github.com/org/repo.git"})
+    user_x_years: Optional[int] = None
+    user_domain: Optional[str] = None
+    user_y_scenario: Optional[str] = None
+    business_context: Optional[Dict[str, Any]] = None
+
+class ProjectCreate(ProjectBase):
+    pass
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    repository_url: Optional[str] = None
+    user_x_years: Optional[int] = None
+    user_domain: Optional[str] = None
+    user_y_scenario: Optional[str] = None
+    default_migration_profile: Optional[str] = None
+    folder_contexts: Optional[Dict[str, Any]] = None
+    business_context: Optional[Dict[str, Any]] = None
+
+class ProjectResponse(ProjectBase):
+    id: str
+    user_x_years: Optional[int] = None
+    user_domain: Optional[str] = None
+    user_y_scenario: Optional[str] = None
+    folder_contexts: Optional[Dict[str, Any]] = None
+    business_context: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# X Engine Schemas
+class XResultResponse(BaseModel):
+    value: int
+    unit: str = "years"
+    source: str  # "USER" | "DOMAIN_BASELINE" | "SYSTEM_DEFAULT"
+    domain: Optional[str] = None
+    domainTitle: Optional[str] = None
+    confidence: Optional[str] = None  # "HIGH" | "MEDIUM" | "LOW"
+    explanation: str
+    overrideAvailable: bool = True
+    userX: Optional[int] = None
+    estimatedDomainX: Optional[int] = None
+    contextLevel: str = "REPOSITORY"  # "REPOSITORY" | "FOLDER"
+    matchedIndicators: List[str] = Field(default_factory=list)
+
+class XContextUpdateRequest(BaseModel):
+    user_x_years: Optional[int] = None
+    user_domain: Optional[str] = None
+    folder_path: Optional[str] = None
+    folder_x_years: Optional[int] = None
+    folder_notes: Optional[str] = None
+    clear_user_x: bool = False
+
+class DomainBaselineSchema(BaseModel):
+    key: str
+    title: str
+    baseline_x_years: int
+    description: str
+    compliance_references: List[str]
+    keywords: List[str]
+
+# Y Engine Schemas
+class YResultResponse(BaseModel):
+    value: int  # 5 | 10 | 15 | 20
+    unit: str = "years"
+    scenario: str  # "FAST" | "STANDARD" | "COMPLEX" | "LEGACY_HEAVY"
+    scenarioTitle: str
+    source: str  # "SYSTEM_DEFAULT" | "USER_SELECTED"
+    explanation: str
+    details: Optional[str] = None
+
+class YContextUpdateRequest(BaseModel):
+    user_y_scenario: Optional[str] = None
+    clear_user_y: bool = False
+
+class MigrationScenarioSchema(BaseModel):
+    key: str
+    title: str
+    value: int
+    description: str
+    details: str
+
+
+
+# Scan Schemas
+class ScanCreate(BaseModel):
+    target_path: str = Field(..., json_schema_extra={"example": "/app/source"})
+    scan_type: str = Field("source", json_schema_extra={"example": "source"})
+
+class ScanResponse(BaseModel):
+    id: str
+    project_id: str
+    status: ScanStatus
+    target_path: str
+    scan_type: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    cbom_version: str
+    scanner_rule_version: str = "2026.1.0"
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Evidence Schemas
+class EvidenceResponse(BaseModel):
+    id: str
+    asset_id: str
+    evidence_type: EvidenceType
+    source_file: str
+    line_number: Optional[int] = None
+    detector_name: str
+    detector_version: str
+    excerpt: Optional[str] = None
+    confidence_score: float
+    provenance: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Crypto Asset Schemas
+class CryptoAssetResponse(BaseModel):
+    id: str
+    scan_id: str
+    name: str
+    asset_type: AssetType
+    algorithm_name: str
+    key_size: Optional[int] = None
+    purpose: CryptoPurpose
+    location: str
+    line_number: Optional[int] = None
+    quantum_safety: QuantumSafety
+    is_unknown: bool = False
+    unknown_reason: Optional[str] = None
+    review_status: ReviewStatus = ReviewStatus.RESOLVED
+    data_lifetime_years: Optional[float] = None
+    lifetime_label: Optional[str] = None
+    business_criticality_label: Optional[str] = None
+    business_criticality_score: Optional[float] = None
+    classification_summary: Optional[str] = None
+    migration_time_years: Optional[float] = None
+    quantum_threat_horizon: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class InventoryAssetResponse(CryptoAssetResponse):
+    effective_x_years: float
+    effective_data_sensitivity: Optional[int] = None
+    effective_business_criticality: Optional[str] = None
+    effective_regulatory_impact: Optional[int] = None
+    effective_financial_impact: Optional[int] = None
+    effective_operational_impact: Optional[int] = None
+    effective_exposure: Optional[str] = None
+    effective_context_sources: Optional[Dict[str, str]] = None
+    effective_y_years: float
+    effective_y_scenario: str
+    effective_z_value: Optional[float] = None
+    effective_z_planning_horizon_years: Optional[float] = None
+    effective_z_target_year: Optional[int] = None
+    xyz_source: str = "CANONICAL_PROJECT_CONTEXT"
+
+class ReviewAssetRequest(BaseModel):
+    algorithm_name: Optional[str] = None
+    purpose: Optional[CryptoPurpose] = None
+    action: str = Field("RESOLVE", json_schema_extra={"example": "RESOLVE"})  # RESOLVE or REJECT
+
+# Coverage Schemas
+class CategoryCoverage(BaseModel):
+    category_name: str
+    scanned_count: int
+    coverage_percentage: float
+    notes: str
+
+class CoverageReportResponse(BaseModel):
+    project_id: str
+    overall_coverage_percentage: float
+    categories: List[CategoryCoverage]
+    total_assets_discovered: int
+    unknown_needs_review_count: int
+    disclaimer: str = "ECDAT explicitly communicates limitations and coverage. 100% cryptographic discovery is never claimed."
+
+# Risk Assessment Schemas
+class RiskAssessRequest(BaseModel):
+    asset_id: Optional[str] = None
+    project_id: Optional[str] = None
+    data_sensitivity_label: Optional[str] = "UNKNOWN"
+    business_criticality_label: Optional[str] = "UNKNOWN"
+    data_lifetime_years: Optional[float] = None
+    migration_time_years: Optional[float] = None
+    quantum_threat_horizon_year: Optional[int] = None
+    user_x_years: Optional[float] = None
+    user_domain: Optional[str] = None
+    user_y_scenario: Optional[str] = None
+    force_reassessment: Optional[bool] = True
+
+class RiskAssessmentResponse(BaseModel):
+    id: str
+    asset_id: str
+    risk_score: float
+    risk_level: RiskLevel
+    quantum_vulnerability_score: float
+    data_sensitivity_score: float
+    business_criticality_score: float
+    mosca_factor_score: float
+    exposure_score: float
+    migration_complexity_score: float
+    explanation: Optional[str] = None
+    confidence_score: float
+    risk_model_version: str = "2.0-MOSCA"
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Recommendation Schemas
+class RecommendationResponse(BaseModel):
+    id: str
+    asset_id: str
+    target_pqc_candidate: str
+    standard_status: StandardStatus
+    rationale: str
+    compatibility_notes: Optional[str] = None
+    performance_notes: Optional[str] = None
+    latency_impact: Optional[str] = None
+    cost_impact: Optional[str] = None
+    latency_level: Optional[str] = None
+    cost_level: Optional[str] = None
+    migration_complexity: str
+    confidence: float
+    kb_version: str = "2026.3.0-NIST-PQC"
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Threat Scenario Schemas
+class ThreatScenarioBase(BaseModel):
+    name: str
+    scenario_type: ThreatScenarioType = ThreatScenarioType.MODERATE
+    quantum_threat_horizon_year: Optional[int] = None
+    data_lifetime_years: Optional[int] = None
+    migration_time_years: Optional[int] = None
+    description: Optional[str] = None
+
+class ThreatScenarioCreate(ThreatScenarioBase):
+    pass
+
+class ThreatScenarioResponse(ThreatScenarioBase):
+    id: str
+    threat_scenario_version: str = "1.1"
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Migration Plan Schemas
+class MigrationPlanCreate(BaseModel):
+    name: str = Field(..., json_schema_extra={"example": "PQC Upgrade Phase 1"})
+    profile: Optional[str] = "BALANCED"
+    vendor_dependency_count: Optional[int] = 1
+    pki_cert_dependency_count: Optional[int] = 1
+    crypto_agility_score: Optional[float] = 0.6
+    testing_requirement_level: Optional[TestingRequirement] = TestingRequirement.HIGH
+    engineering_capacity_developers: Optional[int] = 3
+
+class MigrationTaskResponse(BaseModel):
+    id: str
+    plan_id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    recommendation_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    task_type: Optional[str] = "ALGORITHM_REPLACEMENT"
+    priority: Optional[str] = "P2"
+    migration_complexity: Optional[str] = "MEDIUM"
+    person_days: float = 1.0
+    sequence_order: int = 1
+    status: str = "NOT_STARTED"
+    affected_components: List[str] = []
+    dependencies: List[str] = []
+    blockers: List[str] = []
+    validation_requirements: List[str] = []
+    rationale: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class MigrationPlanResponse(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    profile: str = "BALANCED"
+    effort_level: str = "MEDIUM"
+    effort_factors: List[str] = []
+    total_person_days: float
+    total_calendar_months: float
+    assumptions: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    tasks: List[MigrationTaskResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Validation & Simulation Schemas
+class MigrationSimulationResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    asset_id: str
+    recommendation_id: Optional[str] = None
+    migration_plan_id: Optional[str] = None
+    status: str
+    sandbox_path: Optional[str] = None
+    transformation_type: Optional[str] = None
+    files_changed: List[str] = []
+    changes_summary: Optional[Dict[str, Any]] = None
+    before_fingerprint: Optional[str] = None
+    after_fingerprint: Optional[str] = None
+    build_result: Optional[Dict[str, Any]] = None
+    test_result: Optional[Dict[str, Any]] = None
+    validation_result: Optional[Dict[str, Any]] = None
+    failure_reason: Optional[str] = None
+    blocker_reason: Optional[str] = None
+    confidence: float = 1.0
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ValidationRunResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    scan_id: Optional[str] = None
+    simulation_id: Optional[str] = None
+    plan_id: Optional[str] = None
+    asset_id: Optional[str] = None
+    check_type: str = "BUILD"
+    status: str = "PENDING"
+    framework: Optional[str] = None
+    command: Optional[str] = None
+    exit_code: Optional[int] = None
+    output_summary: Optional[str] = None
+    evidence: Optional[Dict[str, Any]] = None
+    duration: float = 0.0
+    duration_ms: int = 0
+    timeout: bool = False
+    build_passed: bool = False
+    unit_tests_passed: bool = False
+    tests_total: Optional[int] = None
+    tests_passed: Optional[int] = None
+    tests_failed: Optional[int] = None
+    tests_skipped: Optional[int] = None
+    crypto_tests_passed: bool = False
+    integration_tests_passed: bool = False
+    regression_passed: bool = False
+    api_compatible: bool = False
+    logs: Optional[str] = None
+    residual_risk_score: float = 0.0
+    confidence: float = 1.0
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# Audit Schemas
+class AuditEventResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    action: str
+    actor: str
+    details: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# CBOM Schema (Updated to CycloneDX 1.6 per user request)
+class CBOMResponse(BaseModel):
+    bomFormat: str = "CycloneDX"
+    specVersion: str = "1.6"
+    version: int = 1
+    metadata: Dict[str, Any]
+    components: List[Dict[str, Any]] = []
+
+
+# Z Engine Schemas
+class ZComponentInput(BaseModel):
+    id: Optional[str] = None
+    component_id: Optional[str] = None
+    primitive: Optional[str] = None
+    algorithm_name: Optional[str] = None
+    algorithm: Optional[str] = None
+    key_size: Optional[int] = None
+    output_size: Optional[int] = None
+    purpose: Optional[str] = None
+    location: Optional[str] = None
+    repository_path: Optional[str] = None
+
+
+class ZResultResponse(BaseModel):
+    component_id: str
+    primitive: str
+    algorithm: str
+    key_size: Optional[int] = None
+    location: Optional[str] = None
+    quantum_horizon: int = 10
+    target_horizon_year: int = 2036
+    quantum_class: str
+    status: str
+    z_value: Optional[float] = None
+    classical_security_bits: Optional[int] = None
+    quantum_security_bits: Optional[int] = None
+    explanation: str
+    confidence: str = "HIGH"
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ZProjectEvaluationResponse(BaseModel):
+    quantum_horizon: int
+    target_horizon_year: int
+    total_components: int
+    vulnerable_components: int
+    class_breakdown: Dict[str, int]
+    status_breakdown: Dict[str, int]
+    components: List[ZResultResponse]
+    explanation: str
+
+
+# Mosca Engine Integrated Schemas
+class MoscaComponentResultResponse(BaseModel):
+    component_id: str
+    algorithm: str
+    location: Optional[str] = None
+    x: Dict[str, Any]
+    y: Dict[str, Any]
+    z: Dict[str, Any]
+    mosca_score: Optional[float] = None
+    urgency: str
+    technical_urgency: str
+    business_priority: str
+    explanation: str
+
+
+class MoscaProjectEvaluationResponse(BaseModel):
+    project_id: str
+    project_name: str
+    total_components: int
+    critical_components: int
+    urgency_distribution: Dict[str, int]
+    components: List[MoscaComponentResultResponse]
+    explanation: str
+
+# Stage 8: Blast Radius & Network Dependence Schemas
+class CryptoNodeResponse(BaseModel):
+    id: str
+    scan_id: str
+    asset_id: Optional[str] = None
+    artefact_type: str
+    name: str
+    version: Optional[str] = None
+    location: Optional[str] = None
+    quantum_risk: str
+    mosca_x: float
+    business_criticality: float
+    extra_metadata: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class CryptoEdgeResponse(BaseModel):
+    id: str
+    scan_id: str
+    source_node_id: str
+    target_node_id: str
+    relation_type: str
+    strength: float
+    evidence_type: str = "UNKNOWN"
+    evidence_text: str = "Legacy relationship; no stored evidence available."
+    file_path: Optional[str] = None
+    line_number: Optional[int] = None
+    detector_name: Optional[str] = None
+    confidence: float = 0.50
+    extra_metadata: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ScanGraphResponse(BaseModel):
+    scan_id: str
+    nodes: List[CryptoNodeResponse]
+    edges: List[CryptoEdgeResponse]
+    total_nodes: int
+    total_edges: int
+    single_points_of_failure: List[Dict[str, Any]] = []
+
+class BlastRadiusAffectedNodeSchema(BaseModel):
+    node_id: str
+    name: str
+    artefact_type: str
+    location: Optional[str] = None
+    quantum_risk: str
+    distance: int
+    relation_path: List[str] = []
+    impact_score: float
+
+class BlastRadiusResponse(BaseModel):
+    id: Optional[str] = None
+    scan_id: str
+    root_node_id: str
+    root_node_name: str
+    root_node_type: str
+    radius_score: float
+    affected_nodes_count: int
+    direct_dependents: int = 0
+    indirect_dependents: int = 0
+    affected_crypto_assets: int = 0
+    affected_services: int = 0
+    critical_affected_nodes: int = 0
+    edges_traversed: int = 0
+    systems_count: int
+    data_classes: List[str]
+    estimated_migration_effort: float
+    affected_nodes: List[BlastRadiusAffectedNodeSchema]
+    affected_systems: List[str] = []
+    calculation: Optional[Dict[str, Any]] = None
+    traversed_edges_evidence: List[Dict[str, Any]] = []
+
+class TopBlastRadiusSummaryResponse(BaseModel):
+    project_id: str
+    top_blast_radii: List[BlastRadiusResponse]
+    shared_credentials_high_impact: List[Dict[str, Any]]
+    single_points_of_failure: List[Dict[str, Any]]
+
+
+

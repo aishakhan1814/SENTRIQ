@@ -1,0 +1,191 @@
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.core.logging import logger
+from app.repositories.asset_repository import AssetRepository
+from app.risk.service import RiskService
+from app.models.schemas import RiskAssessRequest
+
+router = APIRouter(tags=["Risk"])
+
+@router.get("/risk", response_model=List[Dict[str, Any]])
+def list_risk_assessments(
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    risk_level: Optional[str] = Query(None, description="Filter by risk level (CRITICAL, HIGH, MODERATE, LOW)"),
+    quantum_status: Optional[str] = Query(None, description="Filter by quantum status"),
+    scenario: Optional[str] = Query(None, description="Filter by threat scenario type"),
+    minimum_score: Optional[float] = Query(None, description="Filter by minimum risk score"),
+    db: Session = Depends(get_db)
+):
+    """
+    List risk assessments with optional filtering.
+    """
+    service = RiskService(db)
+    records = service.risk_repo.list_assessments(
+        project_id=project_id,
+        risk_level=risk_level,
+        quantum_status=quantum_status,
+        scenario=scenario,
+        minimum_score=minimum_score
+    )
+    
+    if not records:
+        return []
+
+    asset_ids = list({ra.asset_id for ra in records if ra.asset_id})
+
+    from app.models.db_models import CryptoAsset, ThreatScenario
+    from sqlalchemy.orm import selectinload
+
+    assets_list = (
+        db.query(CryptoAsset)
+        .options(selectinload(CryptoAsset.evidence_items))
+        .filter(CryptoAsset.id.in_(asset_ids))
+        .all()
+    ) if asset_ids else []
+    asset_map = {a.id: a for a in assets_list}
+
+    threats_list = (
+        db.query(ThreatScenario)
+        .filter(ThreatScenario.asset_id.in_(asset_ids))
+        .all()
+    ) if asset_ids else []
+
+    threats_map: Dict[str, List[ThreatScenario]] = {}
+    for t in threats_list:
+        threats_map.setdefault(t.asset_id, []).append(t)
+
+    results = []
+    for ra in records:
+        asset = asset_map.get(ra.asset_id)
+        threats = threats_map.get(ra.asset_id, [])
+        results.append(service._assessment_to_dict(ra, asset, threats))
+
+    return results
+
+@router.get("/risk/summary", response_model=Dict[str, Any])
+def get_risk_summary(
+    project_id: str = Query(..., description="Project ID to summarize"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get project-level risk summary, statistics, and deterministic priority list.
+    """
+    service = RiskService(db)
+    return service.get_project_risk_summary(project_id)
+
+@router.get("/risk/{asset_id}", response_model=Dict[str, Any])
+def get_asset_risk(
+    asset_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get latest full risk assessment and threat scenarios for a specific asset.
+    """
+    service = RiskService(db)
+    asset = service.asset_repo.get(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found.")
+
+    res = service.risk_repo.get_latest_for_asset(asset_id)
+    if not res:
+        # Trigger assessment on-demand if no assessment exists
+        return service.assess_asset(asset_id, force_reassessment=False)
+
+    threats = service.risk_repo.get_threat_scenarios_for_asset(asset_id)
+    return service._assessment_to_dict(res, asset, threats)
+
+@router.post("/risk/assess")
+def assess_risk(
+    req: RiskAssessRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger server-calculated risk assessment for a specific asset or an entire project.
+    """
+    service = RiskService(db)
+
+    try:
+        if req.asset_id:
+            return service.assess_asset(
+                asset_id=req.asset_id,
+                data_sensitivity_label=req.data_sensitivity_label or "UNKNOWN",
+                business_criticality_label=req.business_criticality_label or "UNKNOWN",
+                data_lifetime_years=req.data_lifetime_years,
+                migration_time_years=req.migration_time_years,
+                quantum_threat_horizon_year=req.quantum_threat_horizon_year,
+                user_x_years=req.user_x_years,
+                user_domain=req.user_domain,
+                user_y_scenario=req.user_y_scenario,
+                force_reassessment=req.force_reassessment if req.force_reassessment is not None else True
+            )
+        elif req.project_id:
+            return service.assess_project(
+                project_id=req.project_id,
+                data_sensitivity_label=req.data_sensitivity_label or "UNKNOWN",
+                business_criticality_label=req.business_criticality_label or "UNKNOWN",
+                quantum_threat_horizon_year=req.quantum_threat_horizon_year,
+                user_x_years=req.user_x_years,
+                user_domain=req.user_domain,
+                user_y_scenario=req.user_y_scenario
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Either 'asset_id' or 'project_id' must be provided in request.")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Risk assessment execution failed")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Risk assessment execution failed.",
+                "error_code": "RISK_ASSESSMENT_EXECUTION_ERROR"
+            }
+        )
+
+# Backwards compatible alias routes
+@router.post("/projects/{project_id}/risk/assess")
+def assess_project_risk_legacy(
+    project_id: str,
+    req: Optional[RiskAssessRequest] = None,
+    db: Session = Depends(get_db)
+):
+    if req is None:
+        req = RiskAssessRequest()
+    service = RiskService(db)
+    try:
+        return service.assess_project(
+            project_id=project_id,
+            data_sensitivity_label=req.data_sensitivity_label or "UNKNOWN",
+            business_criticality_label=req.business_criticality_label or "UNKNOWN",
+            quantum_threat_horizon_year=req.quantum_threat_horizon_year,
+            user_x_years=req.user_x_years,
+            user_domain=req.user_domain,
+            user_y_scenario=req.user_y_scenario
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Risk assessment execution failed")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Risk assessment execution failed.",
+                "error_code": "RISK_ASSESSMENT_EXECUTION_ERROR"
+            }
+        )
+
+@router.get("/projects/{project_id}/risk/summary")
+def get_risk_summary_legacy(project_id: str, db: Session = Depends(get_db)):
+    service = RiskService(db)
+    return service.get_project_risk_summary(project_id)
+
+@router.get("/assets/{asset_id}/risk")
+def get_asset_risk_legacy(asset_id: str, db: Session = Depends(get_db)):
+    return get_asset_risk(asset_id=asset_id, db=db)

@@ -1,0 +1,110 @@
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.repositories.scan_repository import ScanRepository
+from app.repositories.project_repository import ProjectRepository
+from app.models.schemas import ScanCreate, ScanResponse
+from app.models.enums import ScanStatus
+from app.orchestration.job_manager import dispatch_scan_job
+
+router = APIRouter(tags=["Scans"])
+
+@router.post("/projects/{project_id}/scans", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
+def start_scan(project_id: str, scan_in: ScanCreate, db: Session = Depends(get_db)):
+    proj = ProjectRepository(db).get(project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    repo = ScanRepository(db)
+    scan = repo.create(project_id=project_id, target_path=scan_in.target_path, scan_type=scan_in.scan_type)
+    dispatch_scan_job(scan.id)
+    return scan
+
+@router.get("/projects/{project_id}/scans", response_model=List[ScanResponse])
+def get_project_scans(project_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    repo = ScanRepository(db)
+    return repo.get_by_project(project_id, skip=skip, limit=limit)
+
+@router.get("/scans/{scan_id}", response_model=ScanResponse)
+def get_scan(scan_id: str, db: Session = Depends(get_db)):
+    repo = ScanRepository(db)
+    scan = repo.get(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return scan
+
+@router.post("/scans/{scan_id}/cancel", response_model=ScanResponse)
+def cancel_scan(scan_id: str, db: Session = Depends(get_db)):
+    repo = ScanRepository(db)
+    scan = repo.update_status(scan_id, ScanStatus.CANCELLED, error_message="Scan cancelled by user")
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return scan
+
+@router.post("/scans/{scan_id}/rerun", response_model=ScanResponse)
+def rerun_scan(scan_id: str, db: Session = Depends(get_db)):
+    repo = ScanRepository(db)
+    old_scan = repo.get(scan_id)
+    if not old_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    new_scan = repo.create(project_id=old_scan.project_id, target_path=old_scan.target_path, scan_type=old_scan.scan_type)
+    dispatch_scan_job(new_scan.id)
+    return new_scan
+
+@router.post("/scans/{scan_id}/inputs/source", response_model=ScanResponse)
+def input_source_scan(scan_id: str, db: Session = Depends(get_db)):
+    repo = ScanRepository(db)
+    scan = repo.get(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    dispatch_scan_job(scan_id)
+    return scan
+
+@router.post("/projects/{project_id}/scans/upload-binary", response_model=ScanResponse, status_code=status.HTTP_201_CREATED)
+async def upload_binary_and_start_scan(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    import os, uuid
+    MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB limit
+
+    upload_dir = os.path.join(os.getcwd(), "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    raw_filename = os.path.basename(file.filename or "uploaded_file")
+    # Sanitize filename (remove path traversal characters, keep safe characters)
+    safe_name = "".join(c for c in raw_filename if c.isalnum() or c in (".", "-", "_"))
+    if not safe_name:
+        safe_name = "uploaded_file"
+
+    safe_filename = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+    file_path = os.path.join(upload_dir, safe_filename)
+
+    total_bytes = 0
+    try:
+        with open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 64)  # 64KB chunks
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"Uploaded file size exceeds limit of {MAX_UPLOAD_BYTES} bytes."
+                    )
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+        raise
+
+    repo = ScanRepository(db)
+    scan = repo.create(project_id=project_id, target_path=file_path, scan_type="binary")
+    dispatch_scan_job(scan.id)
+    return scan
+

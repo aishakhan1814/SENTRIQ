@@ -1,0 +1,124 @@
+from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from app.models.db_models import ValidationRun
+from app.models.enums import ValidationStatus
+
+class ValidationRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_validation_run(
+        self,
+        project_id: Optional[str] = None,
+        scan_id: Optional[str] = None,
+        simulation_id: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        check_type: str = "BUILD",
+        status: ValidationStatus = ValidationStatus.PENDING,
+        framework: Optional[str] = None,
+        command: Optional[str] = None,
+        exit_code: Optional[int] = None,
+        output_summary: Optional[str] = None,
+        evidence: Optional[Dict[str, Any]] = None,
+        duration: float = 0.0,
+        duration_ms: int = 0,
+        timeout: bool = False,
+        build_passed: bool = False,
+        unit_tests_passed: bool = False,
+        tests_total: Optional[int] = None,
+        tests_passed: Optional[int] = None,
+        tests_failed: Optional[int] = None,
+        tests_skipped: Optional[int] = None,
+        crypto_tests_passed: bool = False,
+        integration_tests_passed: bool = False,
+        regression_passed: bool = False,
+        api_compatible: bool = False,
+        logs: Optional[str] = None,
+        residual_risk_score: float = 0.0,
+        confidence: float = 1.0,
+        started_at: Optional[Any] = None,
+        completed_at: Optional[Any] = None
+    ) -> ValidationRun:
+        if not plan_id and simulation_id:
+            from app.models.db_models import MigrationSimulation
+            sim = self.db.query(MigrationSimulation).filter(MigrationSimulation.id == simulation_id).first()
+            if sim and sim.migration_plan_id:
+                plan_id = sim.migration_plan_id
+
+        run = ValidationRun(
+            project_id=project_id,
+            scan_id=scan_id,
+            simulation_id=simulation_id,
+            plan_id=plan_id,
+            asset_id=asset_id,
+            check_type=check_type,
+            status=status,
+            framework=framework,
+            command=command,
+            exit_code=exit_code,
+            output_summary=output_summary,
+            evidence=evidence,
+            duration=duration,
+            duration_ms=duration_ms,
+            timeout=timeout,
+            build_passed=build_passed,
+            unit_tests_passed=unit_tests_passed,
+            tests_total=tests_total,
+            tests_passed=tests_passed,
+            tests_failed=tests_failed,
+            tests_skipped=tests_skipped,
+            crypto_tests_passed=crypto_tests_passed,
+            integration_tests_passed=integration_tests_passed,
+            regression_passed=regression_passed,
+            api_compatible=api_compatible,
+            logs=logs,
+            residual_risk_score=residual_risk_score,
+            confidence=confidence,
+            started_at=started_at,
+            completed_at=completed_at
+        )
+        self.db.add(run)
+        self.db.commit()
+        self.db.refresh(run)
+        return run
+
+    def get(self, validation_id: str) -> Optional[ValidationRun]:
+        return self.db.query(ValidationRun).filter(ValidationRun.id == validation_id).first()
+
+    def get_by_simulation(self, simulation_id: str) -> List[ValidationRun]:
+        return self.db.query(ValidationRun).filter(ValidationRun.simulation_id == simulation_id).order_by(desc(ValidationRun.created_at)).all()
+
+    def list_all(self) -> List[ValidationRun]:
+        return self.db.query(ValidationRun).order_by(desc(ValidationRun.created_at)).all()
+
+    def get_by_project(self, project_id: str) -> List[ValidationRun]:
+        from app.models.db_models import CryptoAsset, Scan, MigrationPlan, MigrationSimulation
+        runs_by_direct = self.db.query(ValidationRun).filter(ValidationRun.project_id == project_id).all()
+        runs_by_asset = (
+            self.db.query(ValidationRun)
+            .join(CryptoAsset, ValidationRun.asset_id == CryptoAsset.id)
+            .join(Scan, CryptoAsset.scan_id == Scan.id)
+            .filter(Scan.project_id == project_id)
+            .all()
+        )
+        runs_by_plan = (
+            self.db.query(ValidationRun)
+            .join(MigrationPlan, ValidationRun.plan_id == MigrationPlan.id)
+            .filter(MigrationPlan.project_id == project_id)
+            .all()
+        )
+        runs_by_sim = (
+            self.db.query(ValidationRun)
+            .join(MigrationSimulation, ValidationRun.simulation_id == MigrationSimulation.id)
+            .filter(MigrationSimulation.project_id == project_id)
+            .all()
+        )
+        seen = set()
+        unique_runs = []
+        for r in runs_by_direct + runs_by_asset + runs_by_plan + runs_by_sim:
+            if r.id not in seen:
+                seen.add(r.id)
+                unique_runs.append(r)
+        return sorted(unique_runs, key=lambda x: x.created_at or "", reverse=True)

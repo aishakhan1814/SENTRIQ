@@ -1,0 +1,160 @@
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { Project, Scan } from '../types';
+import { projectService } from '../services/projectService';
+import { scanService } from '../services/scanService';
+
+interface ProjectContextType {
+  projects: Project[];
+  currentProject: Project | null;
+  setCurrentProject: (project: Project | null) => void;
+  loading: boolean;
+  error: string | null;
+  refreshProjects: () => Promise<void>;
+  latestScan: Scan | null;
+  refreshLatestScan: (existingScans?: Scan[]) => Promise<void>;
+  activeScanId: string | null;
+  setActiveScanId: (id: string | null) => void;
+  isScanModalOpen: boolean;
+  setIsScanModalOpen: (open: boolean) => void;
+}
+
+const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
+
+const SAVED_PROJECT_KEY = 'sentriq_active_project_id';
+
+export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProject, setCurrentProjectState] = useState<Project | null>(null);
+  const [latestScan, setLatestScan] = useState<Scan | null>(null);
+  const [activeScanId, setActiveScanId] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isScanModalOpen, setIsScanModalOpen] = useState<boolean>(false);
+
+  const fetchProjects = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await projectService.list();
+      if (data && data.length > 0) {
+        // Exclude automated test fixture rows from production selector
+        const isTestFixture = (p: Project) =>
+          ['Coverage Test Project', 'Sim Project', 'Test Payment Gateway'].includes(p.name);
+
+        const cleanProjects = data.filter((p) => !isTestFixture(p));
+        const finalProjects = cleanProjects.length > 0 ? cleanProjects : data;
+
+        // Sort projects so primary scanned repos come first
+        const sortedProjects = [...finalProjects].sort((a, b) => {
+          const aPriority = a.name.includes('cryptography') ? 5 : a.name.includes('paramiko') ? 4 : a.name.startsWith('demo-') ? 3 : 1;
+          const bPriority = b.name.includes('cryptography') ? 5 : b.name.includes('paramiko') ? 4 : b.name.startsWith('demo-') ? 3 : 1;
+          return bPriority - aPriority;
+        });
+
+        setProjects(sortedProjects);
+        const savedId = localStorage.getItem(SAVED_PROJECT_KEY);
+        const matched = savedId ? sortedProjects.find((p) => p.id === savedId) : null;
+        
+        const preferred = matched || (sortedProjects.length > 0 ? sortedProjects[0] : null);
+
+        setCurrentProjectState(preferred);
+        if (preferred) {
+          localStorage.setItem(SAVED_PROJECT_KEY, preferred.id);
+        } else {
+          localStorage.removeItem(SAVED_PROJECT_KEY);
+        }
+      } else {
+        setProjects([]);
+        setCurrentProjectState(null);
+        localStorage.removeItem(SAVED_PROJECT_KEY);
+      }
+    } catch (err: any) {
+      setProjects([]);
+      setCurrentProjectState(null);
+      localStorage.removeItem(SAVED_PROJECT_KEY);
+      setError(err?.message || 'Unable to load projects: server returned error.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const setCurrentProject = (proj: Project | null) => {
+    setCurrentProjectState(proj);
+    setActiveScanId(null);
+    if (proj) {
+      localStorage.setItem(SAVED_PROJECT_KEY, proj.id);
+    } else {
+      localStorage.removeItem(SAVED_PROJECT_KEY);
+    }
+  };
+
+  const fetchLatestScan = useCallback(async (existingScans?: Scan[]) => {
+    if (!currentProject) {
+      setLatestScan(null);
+      return;
+    }
+    if (existingScans) {
+      if (existingScans.length > 0) {
+        const sorted = [...existingScans].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setLatestScan(sorted[0]);
+      } else {
+        setLatestScan(null);
+      }
+      return;
+    }
+    try {
+      const scans = await scanService.getProjectScans(currentProject.id);
+      if (scans && scans.length > 0) {
+        // Sort descending by created_at
+        const sorted = [...scans].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        setLatestScan(sorted[0]);
+      } else {
+        setLatestScan(null);
+      }
+    } catch (err) {
+      console.warn('Could not fetch latest scan:', err);
+      setLatestScan(null);
+    }
+  }, [currentProject]);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
+
+  useEffect(() => {
+    fetchLatestScan();
+  }, [fetchLatestScan]);
+
+  return (
+    <ProjectContext.Provider
+      value={{
+        projects,
+        currentProject,
+        setCurrentProject,
+        loading,
+        error,
+        refreshProjects: fetchProjects,
+        latestScan,
+        refreshLatestScan: fetchLatestScan,
+        activeScanId,
+        setActiveScanId,
+        isScanModalOpen,
+        setIsScanModalOpen,
+      }}
+    >
+      {children}
+    </ProjectContext.Provider>
+  );
+};
+
+export const useProject = (): ProjectContextType => {
+  const context = useContext(ProjectContext);
+  if (!context) {
+    throw new Error('useProject must be used within a ProjectProvider');
+  }
+  return context;
+};
